@@ -1,0 +1,26 @@
+# Light Dash on Netlify.
+#
+# The web app in web/ is served as static files; every /api/* request goes to
+# netlify/functions/api.mjs. Data lives in Postgres - see README, "Netlify".
+
+[build]
+  publish = "web"
+  # No build step: the app ships as written. Netlify installs dependencies
+  # (just `pg`) from package.json before deploying the function.
+  command = "echo 'no build step'"
+
+[functions]
+  directory = "netlify/functions"
+  # Ship the Postgres driver as-is rather than bundling it.
+  external_node_modules = ["pg"]
+
+# The app's own security headers are set on API responses; these cover the
+# static pages too.
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    X-Frame-Options = "DENY"
+    Referrer-Policy = "same-origin"
+    Strict-Transport-Security = "max-age=31536000; includeSubDomains"
+    Content-Security-Policy = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"

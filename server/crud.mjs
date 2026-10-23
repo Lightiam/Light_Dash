@@ -9,9 +9,11 @@
  * - Fields marked readonly are dropped from client input; the server sets them.
  * - Every write and its audit entry happen in one transaction: there is no
  *   change without a record of it.
+ * - Works on SQLite and Postgres alike; see db.mjs for the two drivers.
  */
 import { RESOURCES, MODULES } from './resources.mjs';
-import { all, one, insert, update, run, transaction } from './db.mjs';
+// Every function takes `db`: the database, or the transaction it is part of.
+// Inside a transaction everything goes through `tx`, never the outer handle.
 
 export class HttpError extends Error {
   constructor(code, message) {
@@ -36,7 +38,7 @@ const round2 = (n) => Math.round(Number(n) * 100) / 100;
 
 // ---------------------------------------------------------------- validation
 /** Turn one submitted value into what gets stored, or throw a 400 saying why. */
-function coerce(db, r, f, raw) {
+async function coerce(db, r, f, raw) {
   let v = raw;
   if (typeof v === 'string') v = v.trim();
   if (v === '' || v === undefined) v = null;
@@ -85,7 +87,7 @@ function coerce(db, r, f, raw) {
       if (!Number.isInteger(id)) fail(400, `${what} must be a record id`);
       const target = RESOURCES[f.ref];
       const tableName = f.ref;
-      if (!one(db, `SELECT id FROM ${tableName} WHERE id = ?`, id)) {
+      if (!(await db.one(`SELECT id FROM ${tableName} WHERE id = ?`, id))) {
         fail(400, `${what}: no ${target.singular.toLowerCase()} with id ${id}`);
       }
       return id;
@@ -96,12 +98,12 @@ function coerce(db, r, f, raw) {
 }
 
 /** Validate a payload into a row of storable columns (items handled separately). */
-function prepareRow(db, r, payload, { creating }) {
+async function prepareRow(db, r, payload, { creating }) {
   const row = {};
   for (const f of r.fields) {
     if (f.readonly || f.type === 'items') continue;
     if (!(f.name in payload)) continue;
-    row[f.name] = coerce(db, r, f, payload[f.name]);
+    row[f.name] = await coerce(db, r, f, payload[f.name]);
     if (f.required && row[f.name] === null) fail(400, `${r.singular} ${f.label.toLowerCase()} is required`);
   }
   if (creating) {
@@ -139,17 +141,19 @@ function totals(items, taxRate) {
 }
 
 const itemsOf = (db, invoiceId) =>
-  all(db, 'SELECT description, quantity, unit_price, amount FROM invoice_items WHERE invoice_id = ? ORDER BY position', invoiceId);
+  db.all('SELECT description, quantity, unit_price, amount FROM invoice_items WHERE invoice_id = ? ORDER BY position', invoiceId);
 
-function nextInvoiceNumber(db) {
-  const last = one(db, "SELECT number FROM invoices WHERE number LIKE 'INV-%' ORDER BY CAST(substr(number, 5) AS INTEGER) DESC LIMIT 1");
+async function nextInvoiceNumber(tx) {
+  // Two invoices created at the same moment must not both get the same number.
+  await tx.lock('invoice-number');
+  const last = await tx.one("SELECT number FROM invoices WHERE number LIKE 'INV-%' ORDER BY CAST(substr(number, 5) AS INTEGER) DESC LIMIT 1");
   const n = last ? Number(last.number.slice(4)) + 1 : 1;
   return `INV-${String(n).padStart(4, '0')}`;
 }
 
 // ---------------------------------------------------------------- audit
 function audit(db, actor, entity, entityId, action, changes) {
-  insert(db, 'audit_log', {
+  return db.insert('audit_log', {
     at: new Date().toISOString(),
     actor_user_id: actor.userId ?? null,
     actor_label: actor.label,
@@ -160,30 +164,37 @@ function audit(db, actor, entity, entityId, action, changes) {
   });
 }
 
-/** Turn SQLite constraint errors into messages a person can act on. */
+/** Turn constraint errors from either database into messages a person can act on. */
 function friendly(err, r) {
   const msg = String(err?.message || '');
-  const uniq = /UNIQUE constraint failed: \w+\.(\w+)/.exec(msg);
-  if (uniq) {
-    const f = r.fields.find((x) => x.name === uniq[1]);
-    fail(409, `a ${r.singular.toLowerCase()} with this ${(f?.label || uniq[1]).toLowerCase()} already exists`);
+  const code = err?.code;
+  const label = (col) => (r.fields.find((x) => x.name === col)?.label || col).toLowerCase();
+
+  const sqliteUnique = /UNIQUE constraint failed: \w+\.(\w+)/.exec(msg);
+  const pgUnique = code === '23505' ? /Key \((?:lower\()?(\w+)/.exec(String(err.detail || '')) : null;
+  if (sqliteUnique || pgUnique) {
+    const noun = r.singular.toLowerCase();
+    fail(409, `${/^[aeiou]/.test(noun) ? 'an' : 'a'} ${noun} with this ${label((sqliteUnique || pgUnique)[1])} already exists`);
   }
-  if (/FOREIGN KEY constraint failed/.test(msg)) {
+  if (code === '23505') fail(409, `that ${r.singular.toLowerCase()} already exists`);
+  if (/FOREIGN KEY constraint failed/.test(msg) || code === '23503') {
     fail(409, `this ${r.singular.toLowerCase()} is still used by other records, so it cannot be deleted`);
   }
-  if (/CHECK constraint failed/.test(msg)) fail(400, `a value is out of range for this ${r.singular.toLowerCase()}`);
+  if (/CHECK constraint failed/.test(msg) || code === '23514') {
+    fail(400, `a value is out of range for this ${r.singular.toLowerCase()}`);
+  }
   throw err;
 }
 
 // ---------------------------------------------------------------- reads
 /** Display labels for every linked record in these rows, in one query per link. */
-function withLabels(db, r, rows) {
+async function withLabels(db, r, rows) {
   for (const f of r.fields.filter((x) => x.type === 'ref')) {
     const ids = [...new Set(rows.map((row) => row[f.name]).filter((v) => v != null))];
     if (!ids.length) continue;
     const target = RESOURCES[f.ref];
     const labels = new Map(
-      all(db, `SELECT id, ${target.titleSql} AS t FROM ${f.ref} WHERE id IN (${ids.map(() => '?').join(',')})`, ...ids)
+      (await db.all(`SELECT id, ${target.titleSql} AS t FROM ${f.ref} WHERE id IN (${ids.map(() => '?').join(',')})`, ...ids))
         .map((x) => [x.id, x.t]),
     );
     for (const row of rows) {
@@ -194,7 +205,7 @@ function withLabels(db, r, rows) {
   return rows;
 }
 
-export function list(db, name, url) {
+export async function list(db, name, url) {
   const r = resourceOr404(name);
   const fields = fieldMap(r);
   const where = [];
@@ -203,7 +214,8 @@ export function list(db, name, url) {
   const q = String(url.searchParams.get('q') || '').trim();
   const searchable = r.fields.filter((f) => f.search).map((f) => f.name);
   if (q && searchable.length) {
-    where.push(`(${searchable.map((c) => `${c} LIKE ?`).join(' OR ')})`);
+    // Case-insensitive on both databases: LIKE on SQLite, ILIKE on Postgres.
+    where.push(`(${searchable.map((c) => `${c} ${db.ilike} ?`).join(' OR ')})`);
     for (let i = 0; i < searchable.length; i += 1) params.push(`%${q}%`);
   }
   // Exact-match filters, only on declared columns.
@@ -217,33 +229,33 @@ export function list(db, name, url) {
   const limit = Math.min(Math.max(Number(url.searchParams.get('limit')) || 200, 1), 1000);
   const offset = Math.max(Number(url.searchParams.get('offset')) || 0, 0);
   const sqlWhere = where.length ? `WHERE ${where.join(' AND ')}` : '';
-  const total = one(db, `SELECT COUNT(*) AS n FROM ${name} ${sqlWhere}`, ...params).n;
-  const rows = all(db, `SELECT * FROM ${name} ${sqlWhere} ORDER BY ${r.order} LIMIT ? OFFSET ?`, ...params, limit, offset);
-  return { rows: withLabels(db, r, rows), total, limit, offset };
+  const total = (await db.one(`SELECT COUNT(*) AS n FROM ${name} ${sqlWhere}`, ...params)).n;
+  const rows = await db.all(`SELECT * FROM ${name} ${sqlWhere} ORDER BY ${r.order} LIMIT ? OFFSET ?`, ...params, limit, offset);
+  return { rows: await withLabels(db, r, rows), total, limit, offset };
 }
 
-export function get(db, name, id) {
+export async function get(db, name, id) {
   const r = resourceOr404(name);
-  const row = one(db, `SELECT * FROM ${name} WHERE id = ?`, Number(id));
+  const row = await db.one(`SELECT * FROM ${name} WHERE id = ?`, Number(id));
   if (!row) fail(404, `no ${r.singular.toLowerCase()} with id ${id}`);
-  if (name === 'invoices') row.items = itemsOf(db, row.id);
-  return withLabels(db, r, [row])[0];
+  if (name === 'invoices') row.items = await itemsOf(db, row.id);
+  return (await withLabels(db, r, [row]))[0];
 }
 
 /** id + display title, for the link pickers in forms. */
-export function options(db, name) {
+export async function options(db, name) {
   const r = resourceOr404(name);
-  return all(db, `SELECT id, ${r.titleSql} AS title FROM ${name} ORDER BY ${r.order} LIMIT 2000`);
+  return db.all(`SELECT id, ${r.titleSql} AS title FROM ${name} ORDER BY ${r.order} LIMIT 2000`);
 }
 
-export function history(db, name, id) {
+export async function history(db, name, id) {
   resourceOr404(name);
-  return all(
-    db,
+  const rows = await db.all(
     'SELECT * FROM audit_log WHERE entity = ? AND entity_id = ? ORDER BY at DESC, id DESC',
     name,
     Number(id),
-  ).map((e) => ({ ...e, changes: JSON.parse(e.changes || '{}') }));
+  );
+  return rows.map((e) => ({ ...e, changes: JSON.parse(e.changes || '{}') }));
 }
 
 // ---------------------------------------------------------------- writes
@@ -254,41 +266,41 @@ export function history(db, name, id) {
  *                          source file are flagged rather than silently fixed
  *   extra                  server-set columns that are not form fields
  */
-export function create(db, name, payload, actor, { enforceChecks = true, extra = {} } = {}) {
+export async function create(db, name, payload, actor, { enforceChecks = true, extra = {} } = {}) {
   const r = resourceOr404(name);
-  const row = prepareRow(db, r, payload, { creating: true });
+  const row = await prepareRow(db, r, payload, { creating: true });
   const items = name === 'invoices' ? prepareItems(payload) || [] : null;
   if (r.check && enforceChecks) {
     const problem = r.check(row, new Set(Object.keys(row)));
     if (problem) fail(400, problem);
   }
 
-  return transaction(db, () => {
-    if (name === 'invoices') Object.assign(row, { number: nextInvoiceNumber(db), ...totals(items, row.tax_rate) });
+  return db.transaction(async (tx) => {
+    if (name === 'invoices') Object.assign(row, { number: await nextInvoiceNumber(tx), ...totals(items, row.tax_rate) });
     Object.assign(row, extra);
     row.created_at = new Date().toISOString();
     let id;
     try {
-      id = insert(db, name, row);
+      id = await tx.insert(name, row);
     } catch (err) {
       friendly(err, r);
     }
-    if (items) for (const it of items) insert(db, 'invoice_items', { invoice_id: id, ...it });
+    if (items) for (const it of items) await tx.insert('invoice_items', { invoice_id: id, ...it });
 
     const changes = {};
     for (const [k, v] of Object.entries(row)) if (k !== 'created_at' && v !== null) changes[k] = [null, v];
     if (items) changes.items = [null, items.map(({ position, ...rest }) => rest)];
-    audit(db, actor, name, id, 'create', changes);
-    return get(db, name, id);
+    await audit(tx, actor, name, id, 'create', changes);
+    return get(tx, name, id);
   });
 }
 
-export function patch(db, name, id, payload, actor, { enforceChecks = true, requireNote = true } = {}) {
+export async function patch(db, name, id, payload, actor, { enforceChecks = true, requireNote = true } = {}) {
   const r = resourceOr404(name);
-  const before = one(db, `SELECT * FROM ${name} WHERE id = ?`, Number(id));
+  const before = await db.one(`SELECT * FROM ${name} WHERE id = ?`, Number(id));
   if (!before) fail(404, `no ${r.singular.toLowerCase()} with id ${id}`);
 
-  const incoming = prepareRow(db, r, payload, { creating: false });
+  const incoming = await prepareRow(db, r, payload, { creating: false });
   const changes = {};
   for (const [k, v] of Object.entries(incoming)) {
     if ((before[k] ?? null) !== (v ?? null)) changes[k] = [before[k] ?? null, v];
@@ -298,7 +310,7 @@ export function patch(db, name, id, payload, actor, { enforceChecks = true, requ
   if (name === 'invoices') {
     items = prepareItems(payload);
     if (items) {
-      const old = itemsOf(db, before.id);
+      const old = await itemsOf(db, before.id);
       if (JSON.stringify(old) !== JSON.stringify(items.map(({ position, ...rest }) => rest))) {
         changes.items = [old, items.map(({ position, ...rest }) => rest)];
       } else {
@@ -316,7 +328,7 @@ export function patch(db, name, id, payload, actor, { enforceChecks = true, requ
     }
   }
 
-  if (!Object.keys(changes).length) return { ...get(db, name, id), unchanged: true };
+  if (!Object.keys(changes).length) return { ...(await get(db, name, id)), unchanged: true };
 
   if (requireNote && r.requireNote && r.requireNote.when.some((f) => f in changes)) {
     const nf = r.requireNote.field;
@@ -336,47 +348,47 @@ export function patch(db, name, id, payload, actor, { enforceChecks = true, requ
     if (problem) fail(400, problem);
   }
 
-  return transaction(db, () => {
+  return db.transaction(async (tx) => {
     const write = Object.fromEntries(Object.keys(changes).filter((k) => k !== 'items').map((k) => [k, incoming[k]]));
     if (name === 'invoices' && (items || 'tax_rate' in write)) {
-      const lines = items || itemsOf(db, before.id);
+      const lines = items || await itemsOf(tx, before.id);
       const t = totals(lines, merged.tax_rate);
       for (const k of ['subtotal', 'tax', 'total']) {
         if (before[k] !== t[k]) changes[k] = [before[k], t[k]];
       }
       Object.assign(write, t);
       if (items) {
-        run(db, 'DELETE FROM invoice_items WHERE invoice_id = ?', before.id);
-        for (const it of items) insert(db, 'invoice_items', { invoice_id: before.id, ...it });
+        await tx.run('DELETE FROM invoice_items WHERE invoice_id = ?', before.id);
+        for (const it of items) await tx.insert('invoice_items', { invoice_id: before.id, ...it });
       }
     }
     try {
-      update(db, name, before.id, write);
+      await tx.update(name, before.id, write);
     } catch (err) {
       friendly(err, r);
     }
-    audit(db, actor, name, before.id, 'update', changes);
-    return get(db, name, before.id);
+    await audit(tx, actor, name, before.id, 'update', changes);
+    return get(tx, name, before.id);
   });
 }
 
-export function remove(db, name, id, actor) {
+export async function remove(db, name, id, actor) {
   const r = resourceOr404(name);
-  const before = one(db, `SELECT * FROM ${name} WHERE id = ?`, Number(id));
+  const before = await db.one(`SELECT * FROM ${name} WHERE id = ?`, Number(id));
   if (!before) fail(404, `no ${r.singular.toLowerCase()} with id ${id}`);
   if (name === 'invoices' && before.status !== 'Draft') {
     fail(409, `invoice ${before.number} has been ${before.status.toLowerCase()}; void it instead of deleting it`);
   }
-  return transaction(db, () => {
+  return db.transaction(async (tx) => {
     const snapshot = {};
     for (const [k, v] of Object.entries(before)) if (v !== null && k !== 'id') snapshot[k] = [v, null];
-    if (name === 'invoices') snapshot.items = [itemsOf(db, before.id), null];
+    if (name === 'invoices') snapshot.items = [await itemsOf(tx, before.id), null];
     try {
-      run(db, `DELETE FROM ${name} WHERE id = ?`, before.id);
+      await tx.run(`DELETE FROM ${name} WHERE id = ?`, before.id);
     } catch (err) {
       friendly(err, r);
     }
-    audit(db, actor, name, before.id, 'delete', snapshot);
+    await audit(tx, actor, name, before.id, 'delete', snapshot);
     return { deleted: true, id: before.id };
   });
 }

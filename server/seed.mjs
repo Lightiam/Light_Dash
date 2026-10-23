@@ -9,12 +9,15 @@
  *
  * Records go in through the same validation and audit path as the app uses, so
  * the demo cannot contain anything the app itself would refuse.
+ *
+ * Works on SQLite and on Postgres (when a connection string is set).
  */
 import { open, all, run } from './db.mjs';
 import { create, patch } from './crud.mjs';
 
 const RESET = process.argv.includes('--reset');
-const db = open();
+const db = await open();
+console.log(`Seeding ${db.describe()}`);
 const actor = { userId: null, label: 'seed (demo data)' };
 
 const TABLES = [
@@ -23,12 +26,12 @@ const TABLES = [
 ];
 
 if (RESET) {
-  run(db, 'UPDATE users SET employee_id = NULL');
-  for (const t of TABLES) run(db, `DELETE FROM ${t}`);
+  await run(db, 'UPDATE users SET employee_id = NULL');
+  for (const t of TABLES) await run(db, `DELETE FROM ${t}`);
   // Only the demo records' history. KPIs and executives are real data, live in
   // their own tables, and are never touched here - nor is their audit trail.
-  run(db, `DELETE FROM audit_log WHERE entity IN (${TABLES.map(() => '?').join(', ')})`, ...TABLES);
-} else if (all(db, 'SELECT id FROM employees LIMIT 1').length) {
+  await run(db, `DELETE FROM audit_log WHERE entity IN (${TABLES.map(() => '?').join(', ')})`, ...TABLES);
+} else if ((await all(db, 'SELECT id FROM employees LIMIT 1')).length) {
   console.log('The database already has records. Use --reset to replace them with demo data.');
   process.exit(0);
 }
@@ -43,11 +46,11 @@ const monthDay = (monthsAgo, dom) => {
   const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - monthsAgo, dom));
   return d.toISOString().slice(0, 10);
 };
-const add = (resource, row) => create(db, resource, row, actor).id;
+const add = async (resource, row) => (await create(db, resource, row, actor)).id;
 
 // ---------------------------------------------------------------- HR
 const dept = {};
-for (const name of ['Engineering', 'Sales', 'Operations', 'Finance', 'People']) dept[name] = add('departments', { name });
+for (const name of ['Engineering', 'Sales', 'Operations', 'Finance', 'People']) dept[name] = await add('departments', { name });
 
 const people = [
   ['Amara', 'Okafor', 'Engineering', 'Engineering Lead', 'Full-time', -900],
@@ -65,7 +68,7 @@ const people = [
 ];
 const emp = {};
 for (const [first, last, d, title, type, started] of people) {
-  emp[first] = add('employees', {
+  emp[first] = await add('employees', {
     first_name: first,
     last_name: last,
     email: `${first}.${last}@example.com`.toLowerCase(),
@@ -77,19 +80,19 @@ for (const [first, last, d, title, type, started] of people) {
   });
 }
 
-add('time_off', { employee_id: emp.Mei, kind: 'Vacation', start_date: day(6), end_date: day(10), status: 'Approved' });
-add('time_off', { employee_id: emp.Tom, kind: 'Vacation', start_date: day(20), end_date: day(27), status: 'Requested', note: 'Family trip' });
-add('time_off', { employee_id: emp.Omar, kind: 'Sick', start_date: day(-3), end_date: day(-2), status: 'Approved' });
-add('time_off', { employee_id: emp.Sofia, kind: 'Personal', start_date: day(12), end_date: day(12), status: 'Requested' });
+await add('time_off', { employee_id: emp.Mei, kind: 'Vacation', start_date: day(6), end_date: day(10), status: 'Approved' });
+await add('time_off', { employee_id: emp.Tom, kind: 'Vacation', start_date: day(20), end_date: day(27), status: 'Requested', note: 'Family trip' });
+await add('time_off', { employee_id: emp.Omar, kind: 'Sick', start_date: day(-3), end_date: day(-2), status: 'Approved' });
+await add('time_off', { employee_id: emp.Sofia, kind: 'Personal', start_date: day(12), end_date: day(12), status: 'Requested' });
 
-const goal = (who, title, period, progress, status, note) =>
-  add('goals', { employee_id: emp[who], title, period, progress, status, review_note: note });
+const goal = async (who, title, period, progress, status, note) =>
+  await add('goals', { employee_id: emp[who], title, period, progress, status, review_note: note });
 const quarter = `${now.getUTCFullYear()}-Q${Math.floor(now.getUTCMonth() / 3) + 1}`;
-goal('Amara', 'Ship the customer portal v2', quarter, 70, 'On track', 'Core flows done; payments integration in review.');
-goal('Priya', 'Close three new enterprise accounts', quarter, 33, 'At risk', 'One closed, two stalled in procurement.');
-goal('Kwame', 'Cut order turnaround to two days', quarter, 100, 'Done', 'Hit two days for six straight weeks.');
-goal('Hannah', 'Monthly close in five working days', quarter, 60, 'On track', 'Down from nine days; reconciliations next.');
-goal('Grace', 'Run the annual engagement survey', quarter, 0, 'Not started', null);
+await goal('Amara', 'Ship the customer portal v2', quarter, 70, 'On track', 'Core flows done; payments integration in review.');
+await goal('Priya', 'Close three new enterprise accounts', quarter, 33, 'At risk', 'One closed, two stalled in procurement.');
+await goal('Kwame', 'Cut order turnaround to two days', quarter, 100, 'Done', 'Hit two days for six straight weeks.');
+await goal('Hannah', 'Monthly close in five working days', quarter, 60, 'On track', 'Down from nine days; reconciliations next.');
+await goal('Grace', 'Run the annual engagement survey', quarter, 0, 'Not started', null);
 
 // ---------------------------------------------------------------- CRM
 const co = {};
@@ -99,16 +102,16 @@ for (const [name, industry, website] of [
   ['Sample Logistics Co', 'Logistics', 'https://logistics.example.com'],
   ['Demo Health Group', 'Healthcare', 'https://health.example.com'],
   ['Placeholder Studios', 'Media', 'https://studios.example.com'],
-]) co[name] = add('companies', { name, industry, website });
+]) co[name] = await add('companies', { name, industry, website });
 
-const contact = (first, last, company, title) =>
-  add('contacts', { first_name: first, last_name: last, company_id: co[company], job_title: title, email: `${first}@${company.split(' ')[0].toLowerCase()}.example.com`.toLowerCase() });
+const contact = async (first, last, company, title) =>
+  await add('contacts', { first_name: first, last_name: last, company_id: co[company], job_title: title, email: `${first}@${company.split(' ')[0].toLowerCase()}.example.com`.toLowerCase() });
 const ct = {
-  ruth: contact('Ruth', 'Adler', 'Acme Corp', 'COO'),
-  marco: contact('Marco', 'Silva', 'Example Retail Ltd', 'IT Director'),
-  ines: contact('Ines', 'Moreau', 'Sample Logistics Co', 'Head of Operations'),
-  sam: contact('Sam', 'Kowalski', 'Demo Health Group', 'Procurement Lead'),
-  ada: contact('Ada', 'Brennan', 'Placeholder Studios', 'Producer'),
+  ruth: await contact('Ruth', 'Adler', 'Acme Corp', 'COO'),
+  marco: await contact('Marco', 'Silva', 'Example Retail Ltd', 'IT Director'),
+  ines: await contact('Ines', 'Moreau', 'Sample Logistics Co', 'Head of Operations'),
+  sam: await contact('Sam', 'Kowalski', 'Demo Health Group', 'Procurement Lead'),
+  ada: await contact('Ada', 'Brennan', 'Placeholder Studios', 'Producer'),
 };
 
 for (const [title, company, c, owner, value, stage, close] of [
@@ -121,7 +124,7 @@ for (const [title, company, c, owner, value, stage, close] of [
   ['Retail analytics add-on', 'Example Retail Ltd', 'marco', 'Lena', 7000, 'Won', day(-45)],
   ['Logistics fleet module', 'Sample Logistics Co', 'ines', 'Priya', 31000, 'Lost', day(-10)],
 ]) {
-  add('deals', { title, company_id: co[company], contact_id: ct[c], owner_id: emp[owner], value, stage, expected_close: close });
+  await add('deals', { title, company_id: co[company], contact_id: ct[c], owner_id: emp[owner], value, stage, expected_close: close });
 }
 
 // ---------------------------------------------------------------- projects
@@ -132,7 +135,7 @@ for (const [name, company, manager, status, start, end, budget] of [
   ['Retail loyalty integration', 'Example Retail Ltd', 'Sofia', 'Active', day(-30), day(60), 26000],
   ['Office move', null, 'Kwame', 'On hold', day(-10), day(50), 15000],
   ['Analytics add-on', 'Example Retail Ltd', 'Daniel', 'Done', day(-120), day(-50), 7000],
-]) pr[name] = add('projects', { name, company_id: company ? co[company] : null, manager_id: emp[manager], status, start_date: start, end_date: end, budget });
+]) pr[name] = await add('projects', { name, company_id: company ? co[company] : null, manager_id: emp[manager], status, start_date: start, end_date: end, budget });
 
 for (const [title, project, who, status, priority, due] of [
   ['Payments integration', 'Customer portal v2', 'Daniel', 'In progress', 'High', day(7)],
@@ -144,7 +147,7 @@ for (const [title, project, who, status, priority, due] of [
   ['Client sign-off on scope', 'Retail loyalty integration', 'Sofia', 'To do', 'High', day(-4)],
   ['Site survey', 'Acme plant rollout', 'Kwame', 'To do', 'Medium', day(28)],
   ['Lease review', 'Office move', 'Hannah', 'To do', 'Low', day(30)],
-]) add('tasks', { title, project_id: pr[project], assignee_id: emp[who], status, priority, due_date: due });
+]) await add('tasks', { title, project_id: pr[project], assignee_id: emp[who], status, priority, due_date: due });
 
 // Roughly the last six weeks of weekday time for the people on active projects.
 const logging = [
@@ -156,17 +159,17 @@ for (let offset = -42; offset <= 0; offset += 1) {
   const date = day(offset);
   const dow = new Date(`${date}T00:00:00Z`).getUTCDay();
   if (dow === 0 || dow === 6) continue;
-  logging.forEach(([who, project, hours], i) => {
-    if ((offset + i) % 5 === 0) return; // not every person logs every day
-    add('timesheets', { employee_id: emp[who], project_id: pr[project], work_date: date, hours, note: 'Project work' });
-  });
+  for (const [i, [who, project, hours]] of logging.entries()) {
+    if ((offset + i) % 5 === 0) continue; // not every person logs every day
+    await add('timesheets', { employee_id: emp[who], project_id: pr[project], work_date: date, hours, note: 'Project work' });
+  }
 }
 
 // ---------------------------------------------------------------- finance
-const invoice = (company, project, monthsAgo, lines, finalStatus, taxRate = 7.5) => {
+const invoice = async (company, project, monthsAgo, lines, finalStatus, taxRate = 7.5) => {
   const issue = monthDay(monthsAgo, 5);
   const due = monthDay(monthsAgo, 5 + 30);
-  const id = add('invoices', {
+  const id = await add('invoices', {
     company_id: co[company],
     project_id: project ? pr[project] : null,
     issue_date: issue,
@@ -175,19 +178,19 @@ const invoice = (company, project, monthsAgo, lines, finalStatus, taxRate = 7.5)
     items: lines.map(([description, quantity, unit_price]) => ({ description, quantity, unit_price })),
   });
   // Walk it through the real lifecycle so the audit trail looks like real use.
-  if (finalStatus !== 'Draft') patch(db, 'invoices', id, { status: 'Sent' }, actor);
-  if (finalStatus === 'Paid') patch(db, 'invoices', id, { status: 'Paid' }, actor);
+  if (finalStatus !== 'Draft') await patch(db, 'invoices', id, { status: 'Sent' }, actor);
+  if (finalStatus === 'Paid') await patch(db, 'invoices', id, { status: 'Paid' }, actor);
   return id;
 };
-invoice('Example Retail Ltd', 'Analytics add-on', 5, [['Analytics add-on, phase 1', 1, 3500]], 'Paid');
-invoice('Example Retail Ltd', 'Analytics add-on', 4, [['Analytics add-on, phase 2', 1, 3500]], 'Paid');
-invoice('Acme Corp', null, 4, [['Support plan, quarterly', 1, 4500]], 'Paid');
-invoice('Example Retail Ltd', 'Retail loyalty integration', 3, [['Discovery workshop', 2, 1800], ['Integration design', 1, 4200]], 'Paid');
-invoice('Acme Corp', null, 2, [['Support plan, quarterly', 1, 4500]], 'Paid');
-invoice('Example Retail Ltd', 'Retail loyalty integration', 2, [['Integration build, sprint 1', 1, 6500]], 'Paid');
-invoice('Example Retail Ltd', 'Retail loyalty integration', 1, [['Integration build, sprint 2', 1, 6500]], 'Sent');
-invoice('Acme Corp', null, 2, [['On-site training day', 1, 2200]], 'Sent'); // overdue by now
-invoice('Placeholder Studios', null, 0, [['Asset library scoping', 8, 150]], 'Draft');
+await invoice('Example Retail Ltd', 'Analytics add-on', 5, [['Analytics add-on, phase 1', 1, 3500]], 'Paid');
+await invoice('Example Retail Ltd', 'Analytics add-on', 4, [['Analytics add-on, phase 2', 1, 3500]], 'Paid');
+await invoice('Acme Corp', null, 4, [['Support plan, quarterly', 1, 4500]], 'Paid');
+await invoice('Example Retail Ltd', 'Retail loyalty integration', 3, [['Discovery workshop', 2, 1800], ['Integration design', 1, 4200]], 'Paid');
+await invoice('Acme Corp', null, 2, [['Support plan, quarterly', 1, 4500]], 'Paid');
+await invoice('Example Retail Ltd', 'Retail loyalty integration', 2, [['Integration build, sprint 1', 1, 6500]], 'Paid');
+await invoice('Example Retail Ltd', 'Retail loyalty integration', 1, [['Integration build, sprint 2', 1, 6500]], 'Sent');
+await invoice('Acme Corp', null, 2, [['On-site training day', 1, 2200]], 'Sent'); // overdue by now
+await invoice('Placeholder Studios', null, 0, [['Asset library scoping', 8, 150]], 'Draft');
 
 for (const [monthsAgo, dom, category, vendor, amount, project, who, status] of [
   [5, 8, 'Software', 'Example Cloud Hosting', 1200, null, 'Hannah', 'Approved'],
@@ -203,7 +206,7 @@ for (const [monthsAgo, dom, category, vendor, amount, project, who, status] of [
   [0, 3, 'Software', 'Example Cloud Hosting', 1360, null, 'Hannah', 'Approved'],
   [0, 4, 'Travel', 'Hotel', 410, 'Acme plant rollout', 'Kwame', 'Submitted'],
 ]) {
-  add('expenses', {
+  await add('expenses', {
     spent_on: monthDay(monthsAgo, dom),
     category,
     vendor,
@@ -214,9 +217,10 @@ for (const [monthsAgo, dom, category, vendor, amount, project, who, status] of [
   });
 }
 
-const count = (t) => db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get().n;
-console.log('Seeded demo data:', Object.fromEntries(
-  ['departments', 'employees', 'time_off', 'goals', 'companies', 'contacts', 'deals',
-    'projects', 'tasks', 'timesheets', 'invoices', 'expenses', 'audit_log'].map((t) => [t, count(t)]),
-));
-db.close();
+const counts = {};
+for (const t of ['departments', 'employees', 'time_off', 'goals', 'companies', 'contacts', 'deals',
+  'projects', 'tasks', 'timesheets', 'invoices', 'expenses', 'audit_log']) {
+  counts[t] = (await db.one(`SELECT COUNT(*) AS n FROM ${t}`)).n;
+}
+console.log('Seeded demo data:', counts);
+await db.close();

@@ -87,42 +87,47 @@ export function newToken(prefix = 'ld') {
   return `${prefix}_${randomBytes(32).toString('base64url')}`;
 }
 
-export function createSession(db, userId, { kind = 'session', label = null, days = SESSION_DAYS, userAgent = null } = {}) {
+export async function createSession(db, userId, { kind = 'session', label = null, days = SESSION_DAYS, userAgent = null } = {}) {
   const token = newToken(kind === 'api' ? 'ldk' : 'lds');
   const now = new Date();
   const expires = days ? new Date(now.getTime() + days * 86400_000).toISOString() : null;
-  db.prepare(
+  await db.run(
     `INSERT INTO sessions (user_id, token_hash, kind, label, created_at, expires_at, user_agent)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).run(userId, tokenDigest(token), kind, label, now.toISOString(), expires, userAgent);
+    userId, tokenDigest(token), kind, label, now.toISOString(), expires, userAgent,
+  );
   return token; // the only time it exists in plaintext
 }
 
-export function revokeSession(db, token) {
-  return Number(
-    db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(tokenDigest(token)).changes,
-  );
+export async function revokeSession(db, token) {
+  return (await db.run('DELETE FROM sessions WHERE token_hash = ?', tokenDigest(token))).changes;
 }
 
+// "Last used" is for spotting stale credentials, not an access log, so it is
+// written at most every few minutes rather than on every request - on a hosted
+// database that is one fewer round trip per call.
+const TOUCH_EVERY_MS = 5 * 60_000;
+
 /** Resolve a bearer token to its user, or null. Expired rows are cleaned up. */
-export function userForToken(db, token) {
+export async function userForToken(db, token) {
   if (!token) return null;
-  const row = db
-    .prepare(
-      `SELECT s.id AS session_id, s.expires_at, s.kind, u.*
-         FROM sessions s JOIN users u ON u.id = s.user_id
-        WHERE s.token_hash = ?`,
-    )
-    .get(tokenDigest(token));
+  const row = await db.one(
+    `SELECT s.id AS session_id, s.expires_at, s.kind, s.last_used_at, u.*
+       FROM sessions s JOIN users u ON u.id = s.user_id
+      WHERE s.token_hash = ?`,
+    tokenDigest(token),
+  );
   if (!row) return null;
   if (row.expires_at && Date.parse(row.expires_at) < Date.now()) {
-    db.prepare('DELETE FROM sessions WHERE id = ?').run(row.session_id);
+    await db.run('DELETE FROM sessions WHERE id = ?', row.session_id);
     return null;
   }
   if (!row.active) return null;
-  const now = new Date().toISOString();
-  db.prepare('UPDATE sessions SET last_used_at = ? WHERE id = ?').run(now, row.session_id);
-  db.prepare('UPDATE users SET last_seen_at = ? WHERE id = ?').run(now, row.id);
+  if (!row.last_used_at || Date.now() - Date.parse(row.last_used_at) > TOUCH_EVERY_MS) {
+    const now = new Date().toISOString();
+    await db.run('UPDATE sessions SET last_used_at = ? WHERE id = ?', now, row.session_id);
+    await db.run('UPDATE users SET last_seen_at = ? WHERE id = ?', now, row.id);
+  }
   return {
     id: row.id,
     email: row.email,
@@ -181,27 +186,29 @@ export const clearCookie = () =>
   `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`;
 
 // ---------------------------------------------------------------- lockout
-// A small in-memory throttle. It resets when the process restarts, which is the
-// honest limit of a single-process app - for a hosted deployment with more than
-// one worker this belongs in the database or a shared cache.
-const attempts = new Map();
+// Kept in the database, not in memory: on Netlify every request may land on a
+// different short-lived instance, so an in-memory counter would never add up.
 const WINDOW_MS = 15 * 60_000;
 const MAX_ATTEMPTS = 8;
 
-export function loginBlocked(key) {
-  const rec = attempts.get(key);
+export async function loginBlocked(db, key) {
+  const rec = await db.one('SELECT first_at, count FROM login_attempts WHERE key = ?', key);
   if (!rec) return false;
-  if (Date.now() - rec.first > WINDOW_MS) {
-    attempts.delete(key);
-    return false;
-  }
+  if (Date.now() - Date.parse(rec.first_at) > WINDOW_MS) return false;
   return rec.count >= MAX_ATTEMPTS;
 }
 
-export function noteFailure(key) {
-  const rec = attempts.get(key);
-  if (!rec || Date.now() - rec.first > WINDOW_MS) attempts.set(key, { first: Date.now(), count: 1 });
-  else rec.count += 1;
+export async function noteFailure(db, key) {
+  const now = new Date();
+  const windowStart = new Date(now.getTime() - WINDOW_MS).toISOString();
+  // One statement, so two failures arriving at once cannot both read "0".
+  await db.run(
+    `INSERT INTO login_attempts (key, first_at, count) VALUES (?, ?, 1)
+     ON CONFLICT (key) DO UPDATE SET
+       count = CASE WHEN login_attempts.first_at < ? THEN 1 ELSE login_attempts.count + 1 END,
+       first_at = CASE WHEN login_attempts.first_at < ? THEN excluded.first_at ELSE login_attempts.first_at END`,
+    key, now.toISOString(), windowStart, windowStart,
+  );
 }
 
-export const clearFailures = (key) => attempts.delete(key);
+export const clearFailures = (db, key) => db.run('DELETE FROM login_attempts WHERE key = ?', key);

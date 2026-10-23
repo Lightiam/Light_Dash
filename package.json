@@ -2,7 +2,7 @@
   "name": "light-dash",
   "version": "0.1.0",
   "private": true,
-  "description": "A simple ERP: HR, CRM, projects and finance, with roles and an audit log. No dependencies.",
+  "description": "A simple ERP: HR, CRM, projects and finance, with roles and an audit log. Runs locally on SQLite or on Netlify with Postgres.",
   "type": "module",
   "engines": {
     "node": ">=22.5.0"
@@ -10,8 +10,12 @@
   "scripts": {
     "start": "node server/server.mjs",
     "demo": "node server/seed.mjs",
-    "demo:reset": "node server/seed.mjs --reset"
+    "demo:reset": "node server/seed.mjs --reset",
+    "migrate": "node server/migrate.mjs",
+    "copy-to-postgres": "node server/copy-to-postgres.mjs",
+    "test:schema": "node test/schema-parity.mjs"
   },
-  "dependencies": {},
-  "devDependencies": {}
+  "dependencies": {
+    "pg": "^8.23.1"
+  }
 }

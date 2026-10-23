@@ -32,7 +32,9 @@ const opt = (n, d = null) => {
   return i >= 0 && argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[i + 1] : d;
 };
 
-const db = open();
+const db = await open();
+// Say which database is being changed, so nobody edits production by accident.
+console.log(`Accounts in ${db.describe()}`);
 const need = (v, msg) => {
   if (!v) {
     console.error(msg);
@@ -49,7 +51,7 @@ function writeSecret(name, lines) {
 }
 
 function findUser(email) {
-  return one(db, 'SELECT * FROM users WHERE email = ? COLLATE NOCASE', email);
+  return one(db, 'SELECT * FROM users WHERE lower(email) = lower(?)', email);
 }
 
 const show = (u) =>
@@ -58,14 +60,14 @@ const show = (u) =>
 
 switch (cmd) {
   case 'list': {
-    const users = all(db, 'SELECT * FROM users ORDER BY id');
+    const users = await all(db, 'SELECT * FROM users ORDER BY id');
     if (!users.length) console.log('No accounts yet.');
     else {
       console.log(`\n  ${'id'.padStart(3)}  ${'email'.padEnd(28)} ${'name'.padEnd(22)} ${'role'.padEnd(7)} status    scopes`);
       for (const u of users) console.log(show(u));
       console.log();
       for (const u of users) {
-        const toks = all(
+        const toks = await all(
           db,
           `SELECT kind, label, created_at, expires_at, last_used_at
              FROM sessions WHERE user_id = ? ORDER BY created_at`,
@@ -100,7 +102,7 @@ switch (cmd) {
     const name = need(opt('name'), '--name is required');
     const role = opt('role', 'viewer');
     if (!ROLES[role]) need(null, `--role must be one of ${Object.keys(ROLES).join(', ')}`);
-    if (findUser(email)) need(null, `an account already exists for ${email}`);
+    if (await findUser(email)) need(null, `an account already exists for ${email}`);
 
     const scopes = opt('scopes') ? opt('scopes').split(',').map((s) => s.trim()).filter(Boolean) : ROLES[role];
     for (const s of scopes) {
@@ -118,7 +120,7 @@ switch (cmd) {
       creds = hashPassword(password);
     }
 
-    const id = insert(db, 'users', {
+    const id = await insert(db, 'users', {
       email,
       name,
       role,
@@ -141,7 +143,7 @@ switch (cmd) {
     }
     if (flag('token')) {
       const days = opt('days') ? Number(opt('days')) : null;
-      const token = createSession(db, id, {
+      const token = await createSession(db, id, {
         kind: 'api',
         label: opt('label') || 'api token',
         days,
@@ -163,11 +165,11 @@ switch (cmd) {
 
   case 'passwd': {
     const email = need(opt('email'), '--email is required').toLowerCase();
-    const user = need(findUser(email), `no account for ${email}`);
+    const user = need(await findUser(email), `no account for ${email}`);
     const password = opt('password') || randomBytes(18).toString('base64url');
-    update(db, 'users', user.id, hashPassword(password));
+    await update(db, 'users', user.id, hashPassword(password));
     // Changing a password invalidates existing browser sessions.
-    exec(db, "DELETE FROM sessions WHERE user_id = ? AND kind = 'session'", user.id);
+    await exec(db, "DELETE FROM sessions WHERE user_id = ? AND kind = 'session'", user.id);
     const path = writeSecret(`${email.replace(/[^a-z0-9]+/gi, '_')}_password.txt`, [
       `New password for ${email}`,
       `set ${new Date().toISOString()}`,
@@ -181,22 +183,22 @@ switch (cmd) {
 
   case 'scopes': {
     const email = need(opt('email'), '--email is required').toLowerCase();
-    const user = need(findUser(email), `no account for ${email}`);
+    const user = need(await findUser(email), `no account for ${email}`);
     const scopes = need(opt('scopes'), '--scopes is required (comma separated)')
       .split(',').map((s) => s.trim()).filter(Boolean);
     for (const s of scopes) {
       if (!SCOPES[s]) need(null, `unknown scope "${s}". Run: node server/users.mjs scope-list`);
     }
-    update(db, 'users', user.id, { scopes: JSON.stringify(scopes) });
+    await update(db, 'users', user.id, { scopes: JSON.stringify(scopes) });
     console.log(`\n  ${email} now has: ${scopes.join(' ')}\n`);
     break;
   }
 
   case 'token': {
     const email = need(opt('email'), '--email is required').toLowerCase();
-    const user = need(findUser(email), `no account for ${email}`);
+    const user = need(await findUser(email), `no account for ${email}`);
     const days = opt('days') ? Number(opt('days')) : null;
-    const token = createSession(db, user.id, {
+    const token = await createSession(db, user.id, {
       kind: 'api',
       label: opt('label') || 'api token',
       days,
@@ -220,19 +222,19 @@ switch (cmd) {
 
   case 'revoke': {
     const email = need(opt('email'), '--email is required').toLowerCase();
-    const user = need(findUser(email), `no account for ${email}`);
+    const user = need(await findUser(email), `no account for ${email}`);
     const n = flag('all')
-      ? exec(db, 'DELETE FROM sessions WHERE user_id = ?', user.id)
-      : exec(db, "DELETE FROM sessions WHERE user_id = ? AND kind = 'api'", user.id);
+      ? await exec(db, 'DELETE FROM sessions WHERE user_id = ?', user.id)
+      : await exec(db, "DELETE FROM sessions WHERE user_id = ? AND kind = 'api'", user.id);
     console.log(`\n  Revoked ${n.changes} credential(s) for ${email}.\n`);
     break;
   }
 
   case 'disable': {
     const email = need(opt('email'), '--email is required').toLowerCase();
-    const user = need(findUser(email), `no account for ${email}`);
-    update(db, 'users', user.id, { active: 0 });
-    exec(db, 'DELETE FROM sessions WHERE user_id = ?', user.id);
+    const user = need(await findUser(email), `no account for ${email}`);
+    await update(db, 'users', user.id, { active: 0 });
+    await exec(db, 'DELETE FROM sessions WHERE user_id = ?', user.id);
     console.log(`\n  ${email} disabled and all its credentials revoked.\n`);
     break;
   }
@@ -245,4 +247,4 @@ switch (cmd) {
     process.exit(1);
 }
 
-db.close();
+await db.close();

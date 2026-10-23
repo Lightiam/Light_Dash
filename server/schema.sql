@@ -34,6 +34,14 @@ CREATE TABLE IF NOT EXISTS sessions (
   user_agent   TEXT
 );
 
+-- Failed sign-ins per IP + email, for the lockout. In the database rather than
+-- memory so it holds across server instances.
+CREATE TABLE IF NOT EXISTS login_attempts (
+  key      TEXT PRIMARY KEY,
+  first_at TEXT    NOT NULL,
+  count    INTEGER NOT NULL
+);
+
 -- Every create, update and delete, for every module. Append-only: nothing in
 -- the app updates or deletes a row here. The changed values are copied in, so a
 -- record's history survives the record being deleted.

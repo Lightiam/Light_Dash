@@ -167,35 +167,38 @@ if (DRY) {
 }
 
 // ---------------------------------------------------------------- write
-const db = open();
+const db = await open();
+// Say where the data is going: with a connection string set, this is the
+// hosted database, not the file on this machine.
+console.log(`  into              ${db.describe()}`);
 const actor = { userId: null, label: `import:${basename(file)}` };
 const counts = { executives: 0, created: 0, updated: 0, unchanged: 0, kept: [] };
 
-const executiveId = (name, role) => {
-  const found = one(db, 'SELECT id, role FROM executives WHERE name = ?', name);
+const executiveId = async (name, role) => {
+  const found = await one(db, 'SELECT id, role FROM executives WHERE name = ?', name);
   if (found) {
-    if (role && !found.role) patch(db, 'executives', found.id, { role }, actor);
+    if (role && !found.role) await patch(db, 'executives', found.id, { role }, actor);
     return found.id;
   }
   counts.executives += 1;
-  return create(db, 'executives', { name, role }, actor).id;
+  return (await create(db, 'executives', { name, role }, actor)).id;
 };
 
 for (const r of records) {
-  const execId = executiveId(r.name, r.role);
+  const execId = await executiveId(r.name, r.role);
   const payload = { executive_id: execId, ...r.kpi };
-  const existing = one(
+  const existing = await one(
     db,
     'SELECT id FROM kpis WHERE executive_id = ? AND objective = ? AND deliverable = ?',
     execId, r.kpi.objective, r.kpi.deliverable,
   );
   if (!existing) {
-    create(db, 'kpis', payload, actor, { enforceChecks: false, extra: { source_row: r.row } });
+    await create(db, 'kpis', payload, actor, { enforceChecks: false, extra: { source_row: r.row } });
     counts.created += 1;
     continue;
   }
   // Has a person changed this KPI in the app? Then it is no longer the sheet's.
-  const edited = one(
+  const edited = await one(
     db,
     "SELECT 1 AS yes FROM audit_log WHERE entity = 'kpis' AND entity_id = ? AND action = 'update' AND actor_user_id IS NOT NULL",
     existing.id,
@@ -204,12 +207,12 @@ for (const r of records) {
     counts.kept.push(`${r.name} — ${r.kpi.deliverable}`);
     continue;
   }
-  const out = patch(db, 'kpis', existing.id, payload, actor, { enforceChecks: false, requireNote: false });
+  const out = await patch(db, 'kpis', existing.id, payload, actor, { enforceChecks: false, requireNote: false });
   if (out.unchanged) counts.unchanged += 1;
   else counts.updated += 1;
 }
 // People on the summary sheet with no deliverables are still on the roster.
-for (const s of summaryRows) if (!trackerNames.has(s.name)) executiveId(s.name, s.role);
+for (const s of summaryRows) if (!trackerNames.has(s.name)) await executiveId(s.name, s.role);
 
 console.log(`\n  Written: ${counts.created} new KPIs, ${counts.updated} updated, ${counts.unchanged} unchanged, ${counts.executives} new executives.`);
 if (counts.kept.length) {
@@ -217,4 +220,4 @@ if (counts.kept.length) {
   for (const k of counts.kept) console.log(`   · ${k}`);
 }
 console.log();
-db.close();
+await db.close();

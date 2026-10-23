@@ -2,7 +2,9 @@
 
 A simple ERP: people, customers, projects and money in one place. Modelled on
 the core of [ever-gauzy](https://github.com/ever-co/ever-gauzy), without the
-weight — one Node process, one SQLite file, **no dependencies, no build step**.
+weight — **no build step**. Locally it is one Node process and one SQLite file,
+with nothing to install. Online it runs on [Netlify](#deploy-to-netlify) on
+Postgres, and its only dependency is the `pg` driver.
 
 | Module | What it holds |
 |---|---|
@@ -39,6 +41,13 @@ KPI data are never touched.
 | `HOST` | `127.0.0.1` | localhost-only until you change it |
 | `LIGHTDASH_DB` | `data/lightdash.db` | |
 | `LIGHTDASH_SECURE_COOKIES` | off | set `1` when served over HTTPS |
+| `LIGHTDASH_DATABASE_URL` | — | a Postgres connection string; when set, it is used instead of SQLite |
+
+The database is chosen from the first of these that is set:
+`LIGHTDASH_DATABASE_URL`, `NETLIFY_DB_URL`, `NETLIFY_DATABASE_URL`, `DATABASE_URL`.
+If none is set, the SQLite file is used. Every script (`server.mjs`, `seed.mjs`,
+`users.mjs`, `import-kpis.mjs`) prints which database it is using before it
+writes anything.
 
 ## KPIs
 
@@ -126,19 +135,29 @@ response carries a strict Content-Security-Policy.
 server/
   resources.mjs   every record type, described once: fields, types, rules, module
   crud.mjs        list / read / create / update / delete / history for all of them
-  server.mjs      HTTP, sign-in, permissions, dashboard, static files
+  app.mjs         the API: sign-in, permissions, dashboard, routes
+  server.mjs      local HTTP server: the API plus the files in web/
+  db.mjs          one interface over SQLite (local) and Postgres (hosted)
   auth.mjs        passwords, sessions, tokens, scopes
-  schema.sql      tables
+  schema.sql      tables (SQLite)
+  migrate.mjs     apply the Postgres migrations to a non-Netlify Postgres
+  copy-to-postgres.mjs  move a local install's accounts and KPIs online
   seed.mjs        demo data (never touches KPIs)
   import-kpis.mjs load a KPI workbook into the KPI module
   xlsx.mjs        a small .xlsx reader, no dependencies
   users.mjs       account administration
+netlify/
+  functions/api.mjs              the API as a Netlify Function
+  database/migrations/*.sql      tables (Postgres)
+test/schema-parity.mjs  fails if the SQLite and Postgres tables disagree
 web/              the app: vanilla JS, inline SVG charts
 ```
 
 The forms in the browser are generated from the same definitions the server
 validates against (`/api/schema`), so **adding a field is one edit in
-`resources.mjs`** plus a column in `schema.sql`.
+`resources.mjs`** plus a column in `schema.sql` — and a new migration in
+`netlify/database/migrations/` for Postgres. Never edit a migration that has
+been applied; add a new one. `npm run test:schema` checks the two agree.
 
 ### API
 
@@ -158,19 +177,97 @@ validates against (`/api/schema`), so **adding a field is one edit in
 `contacts`, `deals`, `projects`, `tasks`, `timesheets`, `invoices`, `expenses`,
 `executives`, `kpis`.
 
-## Hosting
+## Deploy to Netlify
 
-Keep it on `127.0.0.1` until all of these hold:
+The pages in `web/` are served as static files, and every `/api/*` request
+goes to one Netlify Function (`netlify/functions/api.mjs`) running the same
+code as the local server. The data goes in Postgres, not in a file: functions
+have no disk that lasts between requests. `netlify.toml` holds all the build
+settings, so there is nothing to configure beyond the database.
+
+1. In Netlify, choose **Add new project → Import an existing project** and
+   pick this GitHub repository. Leave the build settings as they come from
+   `netlify.toml`.
+2. Give it a database — either option below.
+3. Create the first account (or move your existing one) — see
+   [Getting your data online](#getting-your-data-online).
+
+Until a database is connected the site loads, but every API call answers
+`503` with a message saying so.
+
+### Option A: Netlify Database
+
+Netlify's own Postgres needs a credit-based Netlify plan. It sets
+`NETLIFY_DB_URL` for the function automatically, and it applies the files in
+`netlify/database/migrations/` itself on every deploy — so you do not run
+`migrate.mjs`, and the script refuses if you try.
+
+**Deploy previews copy your production data.** Netlify gives each deploy
+preview its own copy of the production database, and preview links are
+public by default. Since this database holds staff records and KPI
+assessments, either turn deploy previews off or put password protection on
+them before your first pull request.
+
+### Option B: any other Postgres
+
+Neon, Supabase, RDS or your own server all work, on any Netlify plan.
+
+1. Create the database and copy its connection string.
+2. In the Netlify site, **Project configuration → Environment variables**, add
+   `DATABASE_URL` with that string, available to **Functions**. Redeploy.
+3. Create the tables from your own machine:
+
+   ```bash
+   DATABASE_URL='postgres://…' npm run migrate
+   ```
+
+   Run it again after pulling a change that adds a migration;
+   `npm run migrate -- --status` shows what is applied and what is pending.
+
+### Getting your data online
+
+Run these on your own machine with the hosted connection string set as
+`DATABASE_URL` in your shell. Each prints the database it is about to use —
+check it says Postgres and the right host.
+
+To start fresh, create the first admin exactly as you would locally:
+
+```bash
+DATABASE_URL='postgres://…' node server/users.mjs create --email you@example.com --name "Your Name" --role admin
+```
+
+To move an existing local install instead, copy it across:
+
+```bash
+DATABASE_URL='postgres://…' npm run copy-to-postgres -- --dry-run
+DATABASE_URL='postgres://…' npm run copy-to-postgres
+```
+
+This copies accounts, executives, KPIs and their audit history. HR, CRM,
+project and finance records are left behind unless you add
+`--include-demo`, so invented demo data does not end up in production. The
+copy only goes into an empty database, lands in one transaction, keeps every
+id, and checks the KPI totals match before it commits. Your local SQLite file
+is opened read-only. Everyone signs in again afterwards.
+
+Online, HTTPS and the `Secure` cookie flag are automatic. Sessions and the
+sign-in throttle live in the database, so they work across however many copies
+of the function Netlify runs.
+
+## Self-hosting
+
+To run `server.mjs` on your own server instead, keep it on `127.0.0.1` until
+all of these hold:
 
 1. HTTPS terminates in front of it (Caddy, nginx, a cloud load balancer).
 2. `LIGHTDASH_SECURE_COOKIES=1` is set.
-3. It runs as **one** process — the sign-in throttle is in memory and SQLite
-   wants one writer.
-4. `data/` is backed up and access-controlled — it holds your records.
+3. On SQLite, it runs as **one** process — SQLite wants one writer. On
+   Postgres, run as many as you like.
+4. The database is backed up and access-controlled — it holds your records.
 
 ## Not built
 
 No payments or bank feeds, no PDF invoices, no multi-currency, no inventory, no
 payroll, no email, no file attachments, no multi-factor sign-in, and no
-automated test suite in the repository yet. Revenue on the dashboard is counted
+automated test suite in the repository yet beyond the schema check. Revenue on the dashboard is counted
 by the month a paid invoice was *issued*, since invoices carry no payment date.
