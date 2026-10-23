@@ -177,6 +177,71 @@ function dashboard(user) {
   return out;
 }
 
+// ---------------------------------------------------------------- KPI overview
+function kpiSummary() {
+  const rows = all(
+    db,
+    `SELECT k.*, e.name AS executive FROM kpis k JOIN executives e ON e.id = k.executive_id`,
+  );
+  const sum = (f) => rows.reduce((a, r) => a + (r[f] || 0), 0);
+  const group = (field) => all(
+    db,
+    `SELECT COALESCE(${field}, '(not set)') AS label, COUNT(*) AS n,
+            COALESCE(SUM(target_value), 0) AS target, COALESCE(SUM(realized), 0) AS realized
+       FROM kpis GROUP BY ${field} ORDER BY target DESC`,
+  );
+
+  // Problems in the data, recomputed from what is stored now - so editing a row
+  // clears its flag, and nothing is presented as cleaner than it is.
+  const checks = [];
+  for (const r of rows) {
+    if (r.month && r.target_date && r.target_date.slice(0, 7) < r.month) {
+      checks.push({ kpi_id: r.id, who: r.executive, what: `"${r.deliverable}" has a target date (${r.target_date}) before its reporting month (${r.month})` });
+    }
+    if (r.status === 'Completed' && r.percent_complete < 100) {
+      checks.push({ kpi_id: r.id, who: r.executive, what: `"${r.deliverable}" is Completed at ${r.percent_complete}%` });
+    }
+    if (r.income_stage === 'Cash Realized' && !(r.realized > 0)) {
+      checks.push({ kpi_id: r.id, who: r.executive, what: `"${r.deliverable}" is at Cash Realized with nothing realised` });
+    }
+  }
+  const byExecutive = all(
+    db,
+    `SELECT e.id, e.name, e.role, COUNT(k.id) AS kpis,
+            SUM(CASE WHEN k.status = 'Completed' THEN 1 ELSE 0 END) AS completed,
+            AVG(k.percent_complete) AS mean_pct,
+            COALESCE(SUM(k.target_value), 0) AS target,
+            COALESCE(SUM(k.realized), 0) AS realized
+       FROM executives e LEFT JOIN kpis k ON k.executive_id = e.id
+      GROUP BY e.id ORDER BY target DESC, e.name`,
+  );
+  for (const e of byExecutive) {
+    if (!e.kpis) checks.push({ who: e.name, what: 'is on the roster but has no KPIs recorded' });
+  }
+
+  const lastImport = one(
+    db,
+    "SELECT actor_label, MAX(at) AS at FROM audit_log WHERE entity = 'kpis' AND actor_label LIKE 'import:%'",
+  );
+  return {
+    totals: {
+      kpis: rows.length,
+      executives: byExecutive.filter((e) => e.kpis).length,
+      roster: byExecutive.length,
+      target: sum('target_value'),
+      realized: sum('realized'),
+      mean_pct: rows.length ? sum('percent_complete') / rows.length : 0,
+      completed: rows.filter((r) => r.status === 'Completed').length,
+      high_priority: rows.filter((r) => ['Critical', 'High'].includes(r.priority)).length,
+    },
+    by_executive: byExecutive,
+    by_stage: group('income_stage'),
+    by_mechanism: group('mechanism'),
+    checks,
+    last_import: lastImport?.at ? { source: lastImport.actor_label.slice(7), at: lastImport.at } : null,
+  };
+}
+
 // ---------------------------------------------------------------- routes
 // [method, pattern, scope, handler]. scope is null (public), '*' (any signed-in
 // account), a scope name, or a function of the URL match returning one.
@@ -212,6 +277,8 @@ const routes = [
     crud.publicSchema((mod) => hasScope(ctx.user, readScope(mod)), (mod) => hasScope(ctx.user, writeScope(mod)))],
 
   ['GET', /^\/api\/dashboard$/, '*', (_m, _url, _b, ctx) => dashboard(ctx.user)],
+
+  ['GET', /^\/api\/kpi-summary$/, 'kpis:read', () => kpiSummary()],
 
   ['GET', /^\/api\/audit$/, 'admin', (_m, url) => {
     const params = [];

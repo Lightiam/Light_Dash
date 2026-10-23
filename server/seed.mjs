@@ -4,7 +4,8 @@
  * dashboard always has a current month to show.
  *
  *   node server/seed.mjs           seed an empty database
- *   node server/seed.mjs --reset   wipe all ERP records (not user accounts) and re-seed
+ *   node server/seed.mjs --reset   wipe the demo records and re-seed. Never touches
+ *                                  user accounts, KPIs or executives.
  *
  * Records go in through the same validation and audit path as the app uses, so
  * the demo cannot contain anything the app itself would refuse.
@@ -24,7 +25,9 @@ const TABLES = [
 if (RESET) {
   run(db, 'UPDATE users SET employee_id = NULL');
   for (const t of TABLES) run(db, `DELETE FROM ${t}`);
-  run(db, 'DELETE FROM audit_log');
+  // Only the demo records' history. KPIs and executives are real data, live in
+  // their own tables, and are never touched here - nor is their audit trail.
+  run(db, `DELETE FROM audit_log WHERE entity IN (${TABLES.map(() => '?').join(', ')})`, ...TABLES);
 } else if (all(db, 'SELECT id FROM employees LIMIT 1').length) {
   console.log('The database already has records. Use --reset to replace them with demo data.');
   process.exit(0);

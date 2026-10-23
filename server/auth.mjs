@@ -38,16 +38,22 @@ export const SCOPES = {
   'projects:write': 'Change projects and tasks, and log time',
   'finance:read': 'Read invoices and expenses',
   'finance:write': 'Change invoices and expenses',
+  'kpis:read': 'Read the KPI page',
+  'kpis:write': 'Enter and assess KPIs',
   admin: 'Everything, plus the audit log and account management',
 };
 
-/** Roles are a convenience bundle; the stored scope list is what is enforced. */
+/**
+ * Roles are a convenience bundle; the stored scope list is what is enforced.
+ * kpis:write is held back from everyone but admin: KPIs rate people's work, so
+ * nobody rates their own by default.
+ */
 export const ROLES = {
   admin: Object.keys(SCOPES),
-  manager: Object.keys(SCOPES).filter((s) => s !== 'admin'),
-  // Day-to-day staff: see the directory and the work, log their time.
-  member: ['hr:read', 'crm:read', 'projects:read', 'projects:write'],
-  viewer: ['hr:read', 'crm:read', 'projects:read', 'finance:read'],
+  manager: Object.keys(SCOPES).filter((s) => s !== 'admin' && s !== 'kpis:write'),
+  // Day-to-day staff: see the directory, the work and the KPIs; log their time.
+  member: ['hr:read', 'crm:read', 'projects:read', 'projects:write', 'kpis:read'],
+  viewer: ['hr:read', 'crm:read', 'projects:read', 'finance:read', 'kpis:read'],
 };
 
 // ---------------------------------------------------------------- passwords

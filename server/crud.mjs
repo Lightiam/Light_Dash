@@ -73,6 +73,10 @@ function coerce(db, r, f, raw) {
       v = String(v);
       if (!isRealDate(v)) fail(400, `${what} must be a real date, YYYY-MM-DD`);
       return v;
+    case 'month':
+      v = String(v);
+      if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(v)) fail(400, `${what} must be a month, YYYY-MM`);
+      return v;
     case 'enum':
       if (!f.options.includes(v)) fail(400, `${what} must be one of: ${f.options.join(', ')}`);
       return v;
@@ -243,17 +247,25 @@ export function history(db, name, id) {
 }
 
 // ---------------------------------------------------------------- writes
-export function create(db, name, payload, actor) {
+/**
+ * Options for importers only - never reachable from the HTTP API:
+ *   enforceChecks: false   store a record exactly as its source wrote it, even
+ *                          where it breaks a cross-field rule, so problems in a
+ *                          source file are flagged rather than silently fixed
+ *   extra                  server-set columns that are not form fields
+ */
+export function create(db, name, payload, actor, { enforceChecks = true, extra = {} } = {}) {
   const r = resourceOr404(name);
   const row = prepareRow(db, r, payload, { creating: true });
   const items = name === 'invoices' ? prepareItems(payload) || [] : null;
-  if (r.check) {
-    const problem = r.check(row);
+  if (r.check && enforceChecks) {
+    const problem = r.check(row, new Set(Object.keys(row)));
     if (problem) fail(400, problem);
   }
 
   return transaction(db, () => {
     if (name === 'invoices') Object.assign(row, { number: nextInvoiceNumber(db), ...totals(items, row.tax_rate) });
+    Object.assign(row, extra);
     row.created_at = new Date().toISOString();
     let id;
     try {
@@ -271,7 +283,7 @@ export function create(db, name, payload, actor) {
   });
 }
 
-export function patch(db, name, id, payload, actor) {
+export function patch(db, name, id, payload, actor, { enforceChecks = true, requireNote = true } = {}) {
   const r = resourceOr404(name);
   const before = one(db, `SELECT * FROM ${name} WHERE id = ?`, Number(id));
   if (!before) fail(404, `no ${r.singular.toLowerCase()} with id ${id}`);
@@ -306,17 +318,21 @@ export function patch(db, name, id, payload, actor) {
 
   if (!Object.keys(changes).length) return { ...get(db, name, id), unchanged: true };
 
-  if (r.requireNote && r.requireNote.when.some((f) => f in changes)) {
+  if (requireNote && r.requireNote && r.requireNote.when.some((f) => f in changes)) {
     const nf = r.requireNote.field;
     const note = String(payload[nf] ?? '').trim();
     if (!note || note === String(before[nf] ?? '').trim()) {
-      fail(400, `changing ${r.requireNote.when.join(' or ')} needs a new ${nf.replace(/_/g, ' ')} explaining it`);
+      const names = r.requireNote.when.map((f) => r.fields.find((x) => x.name === f)?.label.toLowerCase() || f);
+      fail(400, `changing ${names.join(' or ')} needs a new ${nf.replace(/_/g, ' ')} explaining it`);
     }
   }
 
+  // Rules see which fields this change touched, so a rule about two fields is
+  // only enforced when one of them changes - fixing a typo is never blocked by
+  // an older, unrelated problem in the same record.
   const merged = { ...before, ...incoming };
-  if (r.check) {
-    const problem = r.check(merged);
+  if (r.check && enforceChecks) {
+    const problem = r.check(merged, new Set(Object.keys(changes)));
     if (problem) fail(400, problem);
   }
 
@@ -386,7 +402,7 @@ export function publicSchema(canRead, canWrite) {
   const modules = Object.fromEntries(
     Object.entries(MODULES)
       .filter(([m]) => canRead(m))
-      .map(([m, def]) => [m, { label: def.label, resources: def.resources }]),
+      .map(([m, def]) => [m, { label: def.label, resources: def.resources, overview: !!def.overview }]),
   );
   return { modules, resources: out };
 }

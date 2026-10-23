@@ -10,6 +10,7 @@ weight — one Node process, one SQLite file, **no dependencies, no build step**
 | **CRM** | companies, contacts, a deal pipeline |
 | **Projects** | projects, tasks, timesheets |
 | **Finance** | invoices with line items, expenses |
+| **KPIs** | leadership KPIs per executive: overview, entry and assessment |
 | **Dashboard** | pipeline, revenue against expenses, hours, headcount — only the parts you can see |
 | **Audit log** | every create, change and delete, by whom (admins only) |
 
@@ -29,7 +30,8 @@ to start empty. `users.mjs create` writes the generated password to
 
 **The demo data is invented** — the people, the companies (Acme Corp, Example
 Retail Ltd and so on) and every number. To reload fresh demo data later, run
-`node server/seed.mjs --reset`; it wipes every record first (accounts are kept).
+`node server/seed.mjs --reset`; it wipes the demo records first. Accounts and
+KPI data are never touched.
 
 | Variable | Default | |
 |---|---|---|
@@ -38,17 +40,52 @@ Retail Ltd and so on) and every number. To reload fresh demo data later, run
 | `LIGHTDASH_DB` | `data/lightdash.db` | |
 | `LIGHTDASH_SECURE_COOKIES` | off | set `1` when served over HTTPS |
 
+## KPIs
+
+The **KPIs** module holds real leadership data, so it is kept apart from the
+demo: its own tables (`executives`, `kpis`), never touched by
+`seed.mjs --reset`, nor is its audit history.
+
+**Load a KPI workbook** — a tracker sheet with one row per deliverable:
+
+```bash
+node server/import-kpis.mjs "<KPI workbook.xlsx>" --dry-run
+node server/import-kpis.mjs "<KPI workbook.xlsx>"
+```
+
+The data goes into your local database only (`data/`, which git ignores). The
+workbook and its contents are never written into this repository.
+
+- **Imported as written.** Where the workbook breaks a rule — a target date
+  before its own reporting month, an executive on the summary sheet with no
+  deliverables, a summary total that does not add up — the row is kept as the
+  sheet has it and **flagged on the KPI overview**, not silently corrected. Fix
+  it in the app and the flag clears.
+- **After that, KPIs are entered by hand.** They are a judgment about someone's
+  work. Changing % complete or status needs a new review note; a KPI marked
+  Completed must be at 100%; Cash Realized needs the realised amount; a target
+  date cannot fall before its reporting month.
+- **Re-importing never overwrites an assessment.** A KPI someone has changed in
+  the app is skipped and listed, unless `--overwrite-manual` is passed.
+  Re-importing an unchanged workbook writes nothing.
+
+The overview leads with **verified income realised against target value** —
+target value is the stated impact, not booked revenue.
+
 ## Accounts and permissions
 
 Each module has a read and a write permission (`hr:read`, `hr:write`,
-`crm:…`, `projects:…`, `finance:…`), plus `admin`. Roles are bundles:
+`crm:…`, `projects:…`, `finance:…`, `kpis:…`), plus `admin`. Roles are bundles:
 
 | Role | Can |
 |---|---|
 | `admin` | everything, including the audit log |
-| `manager` | read and write every module |
-| `member` | read HR, CRM and projects; write projects and log time |
+| `manager` | read and write every module, except entering KPIs |
+| `member` | read HR, CRM, projects and KPIs; write projects and log time |
 | `viewer` | read every module, change nothing |
+
+`kpis:write` is held by admins only, so nobody rates their own work by default.
+Grant it to someone with `users.mjs scopes`.
 
 The server enforces this on every request, and refuses to start if any route
 lacks a permission. The UI only mirrors it: tabs you cannot read are hidden, and
@@ -92,7 +129,9 @@ server/
   server.mjs      HTTP, sign-in, permissions, dashboard, static files
   auth.mjs        passwords, sessions, tokens, scopes
   schema.sql      tables
-  seed.mjs        demo data
+  seed.mjs        demo data (never touches KPIs)
+  import-kpis.mjs load a KPI workbook into the KPI module
+  xlsx.mjs        a small .xlsx reader, no dependencies
   users.mjs       account administration
 web/              the app: vanilla JS, inline SVG charts
 ```
@@ -113,9 +152,11 @@ validates against (`/api/schema`), so **adding a field is one edit in
 | POST / PATCH / DELETE | `/api/r/:type[/:id]` | change records |
 | GET | `/api/r/:type/:id/history` | that record's audit trail |
 | GET | `/api/audit` | the full audit log (admin) |
+| GET | `/api/kpi-summary` | KPI overview figures and data-quality flags (`kpis:read`) |
 
 `:type` is one of `employees`, `departments`, `time_off`, `goals`, `companies`,
-`contacts`, `deals`, `projects`, `tasks`, `timesheets`, `invoices`, `expenses`.
+`contacts`, `deals`, `projects`, `tasks`, `timesheets`, `invoices`, `expenses`,
+`executives`, `kpis`.
 
 ## Hosting
 

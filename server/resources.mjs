@@ -26,6 +26,7 @@ export const MODULES = {
   crm: { label: 'CRM', resources: ['deals', 'companies', 'contacts'] },
   projects: { label: 'Projects', resources: ['projects', 'tasks', 'timesheets'] },
   finance: { label: 'Finance', resources: ['invoices', 'expenses'] },
+  kpis: { label: 'KPIs', resources: ['kpis', 'executives'], overview: true },
 };
 
 export const RESOURCES = {
@@ -234,6 +235,60 @@ export const RESOURCES = {
       { name: 'status', label: 'Status', type: 'enum', options: ['Submitted', 'Approved', 'Reimbursed', 'Rejected'], default: 'Submitted', list: true },
       { name: 'note', label: 'Note', type: 'text', search: true },
     ],
+  },
+};
+
+// ------------------------------------------------------------------ KPIs
+RESOURCES.executives = {
+  module: 'kpis',
+  label: 'Executives',
+  singular: 'Executive',
+  titleSql: 'name',
+  order: 'name',
+  fields: [
+    { name: 'name', label: 'Name', type: 'text', required: true, list: true, search: true },
+    { name: 'role', label: 'Role', type: 'text', list: true, search: true },
+    { name: 'email', label: 'Email', type: 'email', list: true },
+  ],
+};
+
+RESOURCES.kpis = {
+  module: 'kpis',
+  label: 'KPIs',
+  singular: 'KPI',
+  titleSql: 'deliverable',
+  order: "CASE priority WHEN 'Critical' THEN 0 WHEN 'High' THEN 1 WHEN 'Medium' THEN 2 ELSE 3 END, target_date",
+  // % complete and status are an assessment of someone's work; each change
+  // needs a new review note saying why.
+  requireNote: { when: ['percent_complete', 'status'], field: 'review_note' },
+  fields: [
+    { name: 'executive_id', label: 'Executive', type: 'ref', ref: 'executives', required: true, list: true },
+    { name: 'objective', label: 'Objective', type: 'text', required: true, search: true },
+    { name: 'deliverable', label: 'Deliverable', type: 'text', required: true, list: true, search: true },
+    { name: 'priority', label: 'Priority', type: 'enum', options: ['Critical', 'High', 'Medium', 'Low'], default: 'High', list: true },
+    { name: 'status', label: 'Status', type: 'enum', options: ['Not Started', 'In Progress', 'On Track', 'At Risk', 'Pending Review', 'Completed'], default: 'Not Started', list: true },
+    { name: 'percent_complete', label: '% complete', type: 'percent', default: 0, list: true },
+    { name: 'month', label: 'Reporting month', type: 'month' },
+    { name: 'target_date', label: 'Target date', type: 'date', list: true },
+    { name: 'mechanism', label: 'Revenue mechanism', type: 'text', search: true },
+    { name: 'target_value', label: 'Target value', type: 'money', min: 0, list: true },
+    { name: 'realized', label: 'Realised', type: 'money', min: 0, list: true },
+    { name: 'income_stage', label: 'Income stage', type: 'enum', options: ['Pipeline', 'Contract Signed', 'Cash Realized'], list: true },
+    { name: 'review_note', label: 'Review note', type: 'textarea' },
+  ],
+  // Rules that tie two fields together apply when either of them changes.
+  check: (r, touched) => {
+    const hit = (...f) => !touched || f.some((x) => touched.has(x));
+    if (hit('status', 'percent_complete') && r.status === 'Completed' && Number(r.percent_complete) < 100) {
+      return 'a KPI marked Completed must be at 100%';
+    }
+    if (hit('income_stage', 'realized') && r.income_stage === 'Cash Realized' && !(Number(r.realized) > 0)) {
+      return 'a KPI at Cash Realized needs the realised amount';
+    }
+    if (hit('target_date', 'month') && r.target_date && r.month && r.target_date.slice(0, 7) < r.month) {
+      return `the target date ${r.target_date} is before its reporting month ${r.month}`;
+    }
+    return null;
   },
 };
 

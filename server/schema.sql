@@ -209,6 +209,44 @@ CREATE TABLE IF NOT EXISTS expenses (
   created_at  TEXT NOT NULL
 );
 
+-- ---------------------------------------------------------------------------
+-- KPIs
+--
+-- Deliberately separate from the HR employee list: KPI data is your real
+-- leadership data, and keeping it in its own tables means the demo reset
+-- (server/seed.mjs --reset) can never touch it.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS executives (
+  id         INTEGER PRIMARY KEY,
+  name       TEXT NOT NULL UNIQUE,
+  role       TEXT,
+  email      TEXT,
+  created_at TEXT NOT NULL
+);
+
+-- A KPI is a judgment about someone's work, entered by a person. Changing
+-- % complete or status needs a review note, kept in the audit log.
+CREATE TABLE IF NOT EXISTS kpis (
+  id               INTEGER PRIMARY KEY,
+  executive_id     INTEGER NOT NULL REFERENCES executives(id),
+  objective        TEXT    NOT NULL,
+  deliverable      TEXT    NOT NULL,
+  month            TEXT,                      -- reporting month, YYYY-MM
+  target_date      TEXT,
+  priority         TEXT    NOT NULL DEFAULT 'High',        -- Critical | High | Medium | Low
+  status           TEXT    NOT NULL DEFAULT 'Not Started', -- Not Started | In Progress | On Track | At Risk | Pending Review | Completed
+  percent_complete INTEGER NOT NULL DEFAULT 0,             -- 0..100
+  mechanism        TEXT,                      -- how the money arrives
+  target_value     REAL,                      -- stated value / ARR impact - not booked revenue
+  realized         REAL,                      -- verified income realised
+  income_stage     TEXT,                      -- Pipeline | Contract Signed | Cash Realized
+  review_note      TEXT,
+  source_row       INTEGER,                   -- workbook row it came from, when imported
+  created_at       TEXT    NOT NULL,
+  UNIQUE (executive_id, objective, deliverable)
+);
+
+CREATE INDEX IF NOT EXISTS idx_kpis_exec      ON kpis(executive_id);
 CREATE INDEX IF NOT EXISTS idx_audit_entity   ON audit_log(entity, entity_id, at);
 CREATE INDEX IF NOT EXISTS idx_audit_at       ON audit_log(at);
 CREATE INDEX IF NOT EXISTS idx_sessions_user  ON sessions(user_id);

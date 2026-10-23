@@ -63,10 +63,10 @@ const SERIES = () => [cssVar('--series-1'), cssVar('--series-2'), cssVar('--seri
 
 // Status words carry meaning, so they get an icon and a label, never colour alone.
 const STATUS = {
-  pass: ['Active', 'Approved', 'Done', 'Paid', 'Won', 'Reimbursed', 'On track'],
-  fail: ['Rejected', 'Lost', 'Void', 'At risk', 'Left'],
-  pending: ['Requested', 'Submitted', 'Sent', 'In progress', 'Proposal', 'Qualified', 'Planned',
-    'To do', 'Not started', 'On leave', 'Lead', 'On hold', 'Draft'],
+  pass: ['Active', 'Approved', 'Done', 'Paid', 'Won', 'Reimbursed', 'On track', 'On Track', 'Completed'],
+  fail: ['Rejected', 'Lost', 'Void', 'At risk', 'At Risk', 'Left'],
+  pending: ['Requested', 'Submitted', 'Sent', 'In progress', 'In Progress', 'Proposal', 'Qualified', 'Planned',
+    'To do', 'Not started', 'Not Started', 'On leave', 'Lead', 'On hold', 'Draft', 'Pending Review'],
 };
 const ICON = { pass: '✓', fail: '✕', pending: '○', neutral: '•' };
 function chip(value) {
@@ -369,6 +369,8 @@ function inputFor(f, value, disabled) {
         f.type === 'percent' ? ' min="0" max="100"' : `${f.min != null ? ` min="${f.min}"` : ''}${f.max != null ? ` max="${f.max}"` : ''}`}${dis}${req}>`;
     case 'date':
       return `<input name="${f.name}" type="date" value="${esc(v)}"${dis}${req}>`;
+    case 'month':
+      return `<input name="${f.name}" type="month" value="${esc(v)}"${dis}${req}>`;
     case 'email':
       return `<input name="${f.name}" type="email" value="${esc(v)}"${dis}${req}>`;
     case 'url':
@@ -577,6 +579,85 @@ function renderHistory(events) {
   </li>`).join('')}</ol>`;
 }
 
+// ---------------------------------------------------------------- KPI overview
+async function viewKpiOverview(root) {
+  const d = await api('/api/kpi-summary');
+  const t = d.totals;
+  const pct = t.target ? t.realized / t.target : 0;
+  const canWrite = state.schema.resources.kpis?.canWrite;
+
+  if (!t.kpis) {
+    root.innerHTML = `<div class="banner info"><div><div class="ttl">No KPIs yet</div>
+      <p>Add them on the KPIs tab, or load a KPI workbook with
+      <code>node server/import-kpis.mjs &lt;workbook.xlsx&gt;</code>.</p></div></div>`;
+    return;
+  }
+
+  root.innerHTML = `
+    <div class="banner info"><div>
+      <div class="ttl">Leadership KPIs — assessments of people's work, entered by hand</div>
+      <p>${d.last_import ? `Started from <strong>${esc(d.last_import.source)}</strong>, imported ${esc(fmt.when(d.last_import.at))}. ` : ''}
+      ${canWrite ? 'Edit a KPI on the KPIs tab; changing % complete or status needs a review note.' : 'Read-only for this account.'}
+      Every change is in each KPI's history.</p>
+    </div></div>
+
+    <div class="grid cols-4">
+      <div class="card tile"><div class="label">Verified income realised</div>
+        <div class="value">${esc(fmt.moneyc(t.realized))}</div>
+        <div class="meter is-${pct < 0.15 ? 'critical' : pct < 0.4 ? 'warning' : 'good'}"><i style="width:${Math.max(1, Math.min(100, pct * 100))}%"></i></div>
+        <div class="context">${(pct * 100).toFixed(1)}% of the ${esc(fmt.moneyc(t.target))} target</div></div>
+      <div class="card tile"><div class="label">Target value</div>
+        <div class="value">${esc(fmt.moneyc(t.target))}</div>
+        <div class="context">across ${t.kpis} KPIs · <strong>not</strong> booked revenue</div></div>
+      <div class="card tile"><div class="label">Mean % complete</div>
+        <div class="value">${t.mean_pct.toFixed(0)}<span class="unit">%</span></div>
+        <div class="meter is-${t.mean_pct > 75 ? 'good' : t.mean_pct > 50 ? 'warning' : 'critical'}"><i style="width:${t.mean_pct}%"></i></div>
+        <div class="context">${t.completed} of ${t.kpis} marked Completed</div></div>
+      <div class="card tile"><div class="label">Critical + high priority</div>
+        <div class="value">${t.high_priority}</div>
+        <div class="context">${t.executives} people have KPIs · roster of ${t.roster}</div></div>
+    </div>
+
+    ${d.checks.length ? `<div class="card" style="margin-top:16px">
+      <h2>Data quality <span class="note">${d.checks.length} issue(s) — flagged, not corrected</span></h2>
+      <table class="data"><tbody>${d.checks.map((c) => `<tr>
+        <td style="width:1%"><span class="h-src">${c.kpi_id ? 'data' : 'roster'}</span></td>
+        <td><strong>${esc(c.who)}</strong> ${esc(c.what)}</td></tr>`).join('')}</tbody></table>
+      <p class="sub-note">Rows from the workbook are kept exactly as it had them. Edit a KPI to fix one and its flag clears.</p>
+    </div>` : ''}
+
+    <div class="grid cols-2" style="margin-top:16px">
+      <div class="card"><h2>Target value by income stage <span class="note">how close the money is</span></h2><div id="kp-stage"></div></div>
+      <div class="card"><h2>Target value by revenue mechanism</h2><div id="kp-mech"></div></div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <h2>By executive <span class="note">what each person owns, and what has landed</span></h2>
+      <div class="table-scroll"><table class="data">
+        <thead><tr><th>Executive</th><th>Role</th><th class="num">KPIs</th><th class="num">Completed</th>
+          <th class="num">Mean %</th><th class="num">Target</th><th class="num">Realised</th></tr></thead>
+        <tbody>${d.by_executive.map((e) => `<tr${e.kpis ? '' : ' style="opacity:.6"'}>
+          <td><strong>${esc(e.name)}</strong>${e.kpis ? '' : '<div class="evidence">no KPIs recorded</div>'}</td>
+          <td style="color:var(--text-secondary)">${esc(e.role || '—')}</td>
+          <td class="num">${e.kpis}</td><td class="num">${e.completed || 0}</td>
+          <td class="num">${e.mean_pct == null ? '—' : `${Math.round(e.mean_pct)}%`}</td>
+          <td class="num money">${e.target ? esc(fmt.money(e.target)) : '—'}</td>
+          <td class="num money">${e.realized ? esc(fmt.money(e.realized)) : '—'}</td></tr>`).join('')}</tbody>
+      </table></div>
+    </div>`;
+
+  barChart($('#kp-stage', root), {
+    rows: d.by_stage.map((s) => ({ label: `${s.label} (${s.n})`, value: s.target })),
+    valueFormat: fmt.moneyc,
+    caption: 'Target value of KPIs by income stage.',
+  });
+  barChart($('#kp-mech', root), {
+    rows: d.by_mechanism.map((s) => ({ label: s.label, value: s.target })),
+    valueFormat: fmt.moneyc,
+    caption: 'Target value of KPIs by revenue mechanism.',
+  });
+}
+
 // ---------------------------------------------------------------- audit (admin)
 async function viewAudit(root) {
   const entity = state.auditEntity || '';
@@ -621,9 +702,13 @@ function drawNav() {
   const sub = $('#resources');
   if (mod) {
     sub.hidden = false;
-    sub.innerHTML = mod.resources
-      .filter((r) => state.schema.resources[r])
-      .map((r) => `<button data-resource="${r}" aria-selected="${r === state.resource}">${esc(state.schema.resources[r].label)}</button>`)
+    // A module with an overview gets it as its first sub-tab.
+    const tabs = [
+      ...(mod.overview ? [['_overview', 'Overview']] : []),
+      ...mod.resources.filter((r) => state.schema.resources[r]).map((r) => [r, state.schema.resources[r].label]),
+    ];
+    sub.innerHTML = tabs
+      .map(([r, label]) => `<button data-resource="${r}" aria-selected="${r === state.resource}">${esc(label)}</button>`)
       .join('');
   } else {
     sub.hidden = true;
@@ -631,7 +716,8 @@ function drawNav() {
   }
   $$('#modules button').forEach((b) => b.addEventListener('click', () => {
     state.module = b.dataset.module;
-    state.resource = state.schema.modules[state.module]?.resources.find((r) => state.schema.resources[r]) || null;
+    const m = state.schema.modules[state.module];
+    state.resource = m?.overview ? '_overview' : m?.resources.find((r) => state.schema.resources[r]) || null;
     state.q = '';
     render();
   }));
@@ -649,6 +735,7 @@ async function render() {
   try {
     if (state.module === 'dashboard') await viewDashboard(root);
     else if (state.module === 'audit') await viewAudit(root);
+    else if (state.resource === '_overview' && state.module === 'kpis') await viewKpiOverview(root);
     else await viewResource(root, state.resource);
   } catch (e) {
     root.innerHTML = `<div class="banner"><div><div class="ttl">Could not load this view</div><p>${esc(e.message)}</p></div></div>`;
