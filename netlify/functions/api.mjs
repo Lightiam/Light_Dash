@@ -7,8 +7,19 @@
  * (NETLIFY_DB_URL from Netlify Database, or DATABASE_URL) - functions have no
  * lasting disk, so the SQLite file used locally cannot work here.
  */
+import { getConnectionString } from '@netlify/database';
 import { handle } from '../../server/app.mjs';
 import { postgresTarget } from '../../server/db.mjs';
+
+// Netlify Database may hand the connection string to the function through
+// Netlify.env rather than process.env; @netlify/database reads both.
+if (!postgresTarget()) {
+  try {
+    process.env.NETLIFY_DB_URL = getConnectionString();
+  } catch {
+    // No Netlify Database on this site - answered with 503 below.
+  }
+}
 
 export default async (request, context) => {
   if (!postgresTarget()) {

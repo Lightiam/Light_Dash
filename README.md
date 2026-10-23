@@ -4,7 +4,8 @@ A simple ERP: people, customers, projects and money in one place. Modelled on
 the core of [ever-gauzy](https://github.com/ever-co/ever-gauzy), without the
 weight — **no build step**. Locally it is one Node process and one SQLite file,
 with nothing to install. Online it runs on [Netlify](#deploy-to-netlify) on
-Postgres, and its only dependency is the `pg` driver.
+Postgres, and its only dependencies are the `pg` driver and Netlify's
+`@netlify/database`.
 
 | Module | What it holds |
 |---|---|
@@ -197,10 +198,23 @@ Until a database is connected the site loads, but every API call answers
 
 ### Option A: Netlify Database
 
-Netlify's own Postgres needs a credit-based Netlify plan. It sets
-`NETLIFY_DB_URL` for the function automatically, and it applies the files in
-`netlify/database/migrations/` itself on every deploy — so you do not run
-`migrate.mjs`, and the script refuses if you try.
+Netlify's own Postgres, on credit-based plans — the Free plan included (3
+databases, 5 GB, compute that sleeps after 5 idle minutes). There is nothing to
+switch on: because `@netlify/database` is in `package.json` and migrations are
+in `netlify/database/migrations/`, Netlify creates the database on the first
+deploy, applies the migrations before every deploy goes live, and hands the
+function its connection string. You do not run `migrate.mjs`; the script
+refuses if you try.
+
+To get the production connection string for the steps below:
+
+```bash
+npx netlify-cli database status --branch production --show-credentials
+```
+
+To try the whole site locally against Netlify's runtime and a local copy of
+its Postgres, run `npx netlify-cli database migrations apply` once and then
+`npx netlify-cli dev`; it serves on <http://localhost:8888>.
 
 **Deploy previews copy your production data.** Netlify gives each deploy
 preview its own copy of the production database, and preview links are

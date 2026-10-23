@@ -16,6 +16,7 @@
     "test:schema": "node test/schema-parity.mjs"
   },
   "dependencies": {
+    "@netlify/database": "^2.0.1",
     "pg": "^8.23.1"
   }
 }

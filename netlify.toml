@@ -12,7 +12,7 @@
 [functions]
   directory = "netlify/functions"
   # Ship the Postgres driver as-is rather than bundling it.
-  external_node_modules = ["pg"]
+  external_node_modules = ["pg", "@netlify/database"]
 
 # The app's own security headers are set on API responses; these cover the
 # static pages too.
