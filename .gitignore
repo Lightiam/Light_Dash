@@ -1,0 +1,9 @@
+# Your records and your credentials never belong in the repository.
+data/
+*.db
+*.db-wal
+*.db-shm
+
+node_modules/
+.env
+.env.*

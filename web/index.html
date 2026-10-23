@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Light Dash</title>
+<link rel="stylesheet" href="styles.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232a78d6'/%3E%3Cg fill='%23fff'%3E%3Crect x='7' y='17' width='4' height='8' rx='1'/%3E%3Crect x='14' y='11' width='4' height='14' rx='1'/%3E%3Crect x='21' y='7' width='4' height='18' rx='1'/%3E%3C/g%3E%3C/svg%3E">
+</head>
+<body>
+
+<header class="top">
+  <div class="brand">
+    <svg class="mark" viewBox="0 0 32 32" aria-hidden="true">
+      <rect width="32" height="32" rx="7" fill="var(--series-1)"></rect>
+      <g fill="#fff">
+        <rect x="7" y="17" width="4" height="8" rx="1"></rect>
+        <rect x="14" y="11" width="4" height="14" rx="1"></rect>
+        <rect x="21" y="7" width="4" height="18" rx="1"></rect>
+      </g>
+    </svg>
+    <div>
+      <h1>Light Dash</h1>
+      <div class="sub">People, customers, projects and money in one place</div>
+    </div>
+  </div>
+  <div class="row" id="identity" hidden>
+    <span class="who" id="who"></span>
+    <button class="btn ghost" id="sign-out" type="button">Sign out</button>
+  </div>
+  <button class="btn ghost" id="theme-toggle" type="button" title="Switch between light and dark">Light / dark</button>
+</header>
+
+<!-- The app shell is public; every record behind it needs a signed-in account. -->
+<div id="login-screen" class="login-screen" hidden>
+  <form class="login-card" id="login-form">
+    <svg class="mark" viewBox="0 0 32 32" aria-hidden="true" style="width:34px;height:34px">
+      <rect width="32" height="32" rx="7" fill="var(--series-1)"></rect>
+      <g fill="#fff">
+        <rect x="7" y="17" width="4" height="8" rx="1"></rect>
+        <rect x="14" y="11" width="4" height="14" rx="1"></rect>
+        <rect x="21" y="7" width="4" height="18" rx="1"></rect>
+      </g>
+    </svg>
+    <h2>Light Dash</h2>
+    <p class="sub">Sign in to continue.</p>
+    <label>Email <input name="email" type="email" autocomplete="username" required autofocus></label>
+    <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+    <button class="btn primary" type="submit">Sign in</button>
+    <div class="err" id="login-err" role="alert"></div>
+  </form>
+</div>
+
+<nav class="tabs" id="modules" role="tablist" aria-label="Modules"></nav>
+<nav class="subtabs" id="resources" aria-label="Records"></nav>
+
+<main>
+  <div id="view" role="tabpanel"></div>
+</main>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

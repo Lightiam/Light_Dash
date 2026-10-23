@@ -1,0 +1,17 @@
+{
+  "name": "light-dash",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A simple ERP: HR, CRM, projects and finance, with roles and an audit log. No dependencies.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "start": "node server/server.mjs",
+    "demo": "node server/seed.mjs",
+    "demo:reset": "node server/seed.mjs --reset"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}
